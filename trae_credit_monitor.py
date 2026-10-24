@@ -334,11 +334,60 @@ def persist_refresh_token(uid, new_rt, seed_rt):
             return
 
 
-def get_token(idx, rt_env, did_env, cache, force_refresh=False, keys=None, at_env=''):
-    key = str(idx)
+def _lookup_cache(cache, key, uid, at_env):
+    """按 uid 优先取缓存记录，兼容旧的“序号键”缓存。
+    签到脚本用 uid 作缓存键，本脚本以前用序号（1/2），导致同一份缓存互相看不到。"""
+    ent = cache.get(key) or cache.get(uid) or {}
+    if ent:
+        return ent, key if key in cache else uid
+    targets = {u for u in (uid, _jwt_uid(at_env)) if u}
+    best, best_key, best_exp = {}, None, -1
+    for k, rec in cache.items():
+        if not isinstance(rec, dict):
+            continue
+        ru = _jwt_uid(rec.get('accessToken') or '')
+        if ru and ru in targets and int(rec.get('expiresAt') or 0) > best_exp:
+            best, best_key, best_exp = rec, k, int(rec.get('expiresAt') or 0)
+    return best, best_key
+
+
+def persist_local_json(uid, new_at, new_rt, seed_rt=''):
+    """把轮换后的 token 写回脚本同目录的 !trae.json（本模式下载荷的唯一来源）。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '!trae.json')
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        items = data if isinstance(data, list) else [data]
+        for a in items:
+            if not isinstance(a, dict):
+                continue
+            fuid = str(a.get('uid') or '').strip()
+            hit = (uid and fuid == uid) or ((not uid) and seed_rt and a.get('refreshToken') == seed_rt)
+            if not hit:
+                continue
+            if a.get('accessToken') == new_at and a.get('refreshToken') == new_rt:
+                return
+            a['accessToken'] = new_at
+            if new_rt:
+                a['refreshToken'] = new_rt
+            tmp = path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, path)
+            print('  💾 [续期] !trae.json 中 %s 的 token 已回写' % (a.get('name') or fuid or '账号'))
+            return
+    except Exception as e:
+        print('  ⚠️  [续期] !trae.json 回写失败:', e)
+
+
+def get_token(idx, rt_env, did_env, cache, force_refresh=False, keys=None, at_env='', uid=''):
     # 优先使用显式传入的设备号（!trae.json 的 realDeviceId / TRAE_DEVICE_ID）
     did = did_env or real_device_id() or stable_device_id(rt_env)
-    ent = cache.get(key) or {}
+    uid = (uid or _jwt_uid(at_env) or '').strip()
+    ent, found_key = _lookup_cache(cache, str(idx), uid, at_env)
+    key = uid or found_key or str(idx)
     at = ent.get('accessToken')
     rt_cache = ent.get('refreshToken')
     exp = ent.get('expiresAt') or 0
@@ -367,6 +416,7 @@ def get_token(idx, rt_env, did_env, cache, force_refresh=False, keys=None, at_en
             new_rt = new_rt or rt
             cache[key] = {'accessToken': new_at, 'refreshToken': new_rt, 'expiresAt': _jwt_exp(new_at) or 0, 'updatedAt': int(time.time())}
             persist_refresh_token(_jwt_uid(new_at), new_rt, rt)
+            persist_local_json(_jwt_uid(new_at), new_at, new_rt, rt)
             return new_at, did, new_rt, None
         last = msg
     return None, did, (rt_cache or rt_env), last
@@ -441,6 +491,7 @@ def _accounts_from_local_json():
         label = a.get('name') or a.get('uid') or ('账号%d' % idx)
         did = (a.get('realDeviceId') or a.get('deviceId') or '').strip()
         at = (a.get('accessToken') or '').strip()
+        uid = str(a.get('uid') or '').strip()
         # 每个账号若自带设备密钥，也可用
         priv = norm_pem(a.get('deviceKeyPem', ''))
         pub = norm_pem(a.get('devicePubPem', ''))
@@ -448,7 +499,7 @@ def _accounts_from_local_json():
         if priv and pub and did:
             keys = {'deviceId': did, 'privateKeyPem': priv, 'publicKeyPem': pub,
                     'machineId': (a.get('machineId') or '').strip()}
-        accounts.append((idx, rt, did, label, keys, at))
+        accounts.append((idx, rt, did, label, keys, at, uid))
     if not accounts:
         print('⚠️  !trae.json 中无可用 refreshToken，回退到环境变量')
         return None
@@ -488,7 +539,8 @@ def load_accounts():
             if priv and pub and did:
                 keys = {'deviceId': did, 'privateKeyPem': priv, 'publicKeyPem': pub,
                         'machineId': (a.get('machineId') or '').strip()}
-            accounts.append((idx, rt, did, label, keys, (a.get('accessToken') or '').strip()))
+            accounts.append((idx, rt, did, label, keys, (a.get('accessToken') or '').strip(),
+                             str(a.get('uid') or '').strip()))
         if accounts:
             return accounts
 
@@ -503,13 +555,14 @@ def load_accounts():
         label = '账号%d' % i
         if only and only not in (str(i), label):
             continue
-        accounts.append((i, rt, did, label, None, ''))
+        uid = os.environ.get('TRAE_UID' if i == 1 else 'TRAE_UID_%d' % i, '').strip()
+        accounts.append((i, rt, did, label, None, '', uid))
     return accounts
 
 
 def iter_accts():
-    for idx, rt, did, label, keys, at_env in load_accounts():
-        yield idx, rt, did, label, keys, at_env
+    for idx, rt, did, label, keys, at_env, uid in load_accounts():
+        yield idx, rt, did, label, keys, at_env, uid
 
 
 def main():
@@ -525,15 +578,18 @@ def main():
     cache = load_cache()
     ok, fail = [], []
     out = ['📊 Trae 积分监控', '🕒 ' + bj()]
-    for i, (idx, rt, did, label, keys, at_env) in enumerate(accts):
+    for i, (idx, rt, did, label, keys, at_env, uid) in enumerate(accts):
         name = label if label else '账号%d' % idx
-        token, did, new_rt, err = get_token(idx, rt, did, cache, keys=keys, at_env=at_env)
+        token, did, new_rt, err = get_token(idx, rt, did, cache, keys=keys, at_env=at_env, uid=uid)
         if not token:
             print('❌ [%s] 凭证续期失败: %s' % (name, err))
             fail.append(name + ' 凭证续期失败'); out.append('❌ %s：凭证续期失败' % name); continue
+        if uid:
+            # 实际使用的 token 若比 !trae.json 里的新（来自缓存），顺手把文件同步成同一条链
+            persist_local_json(uid, token, new_rt or '')
         cs = credits_summary(token, did)
         if cs and cs.get('code') in AUTH_FAIL_CODES:
-            token, did, new_rt, err = get_token(idx, rt, did, cache, force_refresh=True, keys=keys, at_env=at_env)
+            token, did, new_rt, err = get_token(idx, rt, did, cache, force_refresh=True, keys=keys, at_env=at_env, uid=uid)
             cs = credits_summary(token, did) if token else None
         if not cs or cs.get('total') is None:
             print('❌ [%s] 查询失败' % name)

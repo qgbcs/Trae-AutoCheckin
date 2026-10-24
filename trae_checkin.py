@@ -613,7 +613,41 @@ def ensure_token(acc, cache):
     return True, '已刷新 accessToken'
 
 
+def persist_local_json(acc):
+    """回写脚本同目录 !trae.json（本模式下的凭据来源）。
+    refreshToken 是轮换链，若不回写，文件会一直停在被轮换掉的旧节点 → 另一方用旧值续期报 10101。"""
+    if not os.path.isfile(LOCAL_ACCOUNTS_FILE):
+        return
+    uid = str(acc.get('uid') or '').strip()
+    name = str(acc.get('_name') or acc.get('name') or '').strip()
+    try:
+        with open(LOCAL_ACCOUNTS_FILE, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+        items = data if isinstance(data, list) else [data]
+        for a in items:
+            if not isinstance(a, dict):
+                continue
+            fuid = str(a.get('uid') or '').strip()
+            fname = str(a.get('name') or '').strip()
+            if not ((uid and fuid == uid) or (name and fname == name)):
+                continue
+            if a.get('accessToken') == acc['accessToken'] and a.get('refreshToken') == acc.get('refreshToken'):
+                return
+            a['accessToken'] = acc['accessToken']
+            if acc.get('refreshToken'):
+                a['refreshToken'] = acc['refreshToken']
+            tmp = LOCAL_ACCOUNTS_FILE + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump(data, fh, ensure_ascii=False, indent=2)
+            os.replace(tmp, LOCAL_ACCOUNTS_FILE)
+            print('💾 [持久化] 已回写 !trae.json（%s）' % (fname or fuid or '账号'))
+            return
+    except Exception as e:
+        print('⚠️ [持久化] !trae.json 回写失败: %s' % e)
+
+
 def persist_tokens(acc):
+    persist_local_json(acc)
     uid = str(acc.get('uid', '') or '').strip()
     if not uid:
         return
