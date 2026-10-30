@@ -729,10 +729,10 @@ def run_login(line, dev, sysf, args):
     print("   refreshToken = %s" % tokens["refreshToken"])
     print("─" * 60)
     entry = {"accessToken": tokens["accessToken"], "refreshToken": tokens["refreshToken"],
-             "uid": uid, "name": name}
+             "uid": uid, "remark": {"name": name}}
     print("📋 可直接放进 TRAE_ACCOUNTS 的条目（把长 token 原样保留）：")
     print(json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
-    return {"uid": uid, "name": name, "accessToken": tokens["accessToken"],
+    return {"uid": uid, "remark": {"name": name}, "accessToken": tokens["accessToken"],
             "refreshToken": tokens["refreshToken"]}
 
 

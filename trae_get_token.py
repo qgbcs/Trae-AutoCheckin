@@ -302,7 +302,7 @@ def load_from_dir(d):
         out.append({"accessToken": a.get("accessToken") or "",
                     "refreshToken": a["refreshToken"],
                     "uid": uid or nick or fn,
-                    "name": nick or uid or fn})
+                    "remark": {"name": nick} if nick else {}})
     return out
 
 
@@ -318,7 +318,8 @@ def accounts_mode():
         seen.add(key)
         n = len(entries) + 1
         rec.setdefault("uid", "账号%d" % n)
-        rec.setdefault("name", rec["uid"])
+        if not isinstance(rec.get("remark"), dict):
+            rec["remark"] = {}
         entries.append(rec)
         seen_entries[str(rec.get("uid"))] = rec
 
@@ -329,13 +330,14 @@ def accounts_mode():
             print("[!] 解析失败 %s: %s" % (p, e), file=sys.stderr); continue
         if not r or not r.get("refreshToken"):
             continue
+        nick = r.get("nickname") or ""
         entry = {"accessToken": r.get("accessToken") or "",
                  "refreshToken": r["refreshToken"],
                  "uid": r.get("uid") or "",
-                 "name": r.get("nickname") or r.get("uid") or ""}
+                 "remark": {"name": nick} if nick else {}}
         real_did = device_id_in(p)
         if real_did:
-            entry["realDeviceId"] = real_did
+            entry["deviceId"] = real_did
         else:
             print("[!] %s 里没有客户端设备号，该账号签到会被服务端拒成 9074" % p,
                   file=sys.stderr)
@@ -369,7 +371,9 @@ def accounts_mode():
     print("TRAE_ACCOUNTS  (共 %d 个账号，整行复制到环境变量)" % len(entries))
     print("=" * 64)
     for i, e in enumerate(entries, 1):
-        print("  %d) %s  UID %s" % (i, e.get("name") or "-", e.get("uid") or "-"))
+        rem = e.get("remark") if isinstance(e.get("remark"), dict) else {}
+        label = rem.get("name") or ("{uid:%s}" % e.get("uid") if e.get("uid") else "-")
+        print("  %d) %s  UID %s" % (i, label, e.get("uid") or "-"))
     print("-" * 64)
     print(line)
     print("=" * 64)

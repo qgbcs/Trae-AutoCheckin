@@ -279,7 +279,19 @@ def stable_device_id(seed):
     return str(int(h[:15], 16))[:16].rjust(16, '0')
 
 
-def real_device_id():
+def acct_name(a, fallback=''):
+    """统一展示名：remark.name；没有就显示 {uid:数字}。"""
+    rem = a.get('remark') if isinstance(a.get('remark'), dict) else {}
+    n = str(rem.get('name') or '').strip()
+    if n:
+        return n
+    uid = str(a.get('uid') or '').strip()
+    if uid:
+        return '{uid:%s}' % uid
+    return fallback or '账号'
+
+
+def local_device_id():
     try:
         home = os.path.expanduser('~')
         names = ('Trae CN', 'TRAE SOLO CN', 'TRAE SOLO', 'Trae')
@@ -376,15 +388,15 @@ def persist_local_json(uid, new_at, new_rt, seed_rt=''):
             with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             os.replace(tmp, path)
-            print('  💾 [续期] !trae.json 中 %s 的 token 已回写' % (a.get('name') or fuid or '账号'))
+            print('  💾 [续期] !trae.json 中 %s 的 token 已回写' % acct_name(a, fuid or '账号'))
             return
     except Exception as e:
         print('  ⚠️  [续期] !trae.json 回写失败:', e)
 
 
 def get_token(idx, rt_env, did_env, cache, force_refresh=False, keys=None, at_env='', uid=''):
-    # 优先使用显式传入的设备号（!trae.json 的 realDeviceId / TRAE_DEVICE_ID）
-    did = did_env or real_device_id() or stable_device_id(rt_env)
+    # 优先使用显式传入的设备号（!trae.json 的 deviceId / TRAE_DEVICE_ID）
+    did = did_env or local_device_id() or stable_device_id(rt_env)
     uid = (uid or _jwt_uid(at_env) or '').strip()
     ent, found_key = _lookup_cache(cache, str(idx), uid, at_env)
     key = uid or found_key or str(idx)
@@ -488,8 +500,8 @@ def _accounts_from_local_json():
         if not rt:
             continue
         idx = i + 1
-        label = a.get('name') or a.get('uid') or ('账号%d' % idx)
-        did = (a.get('realDeviceId') or a.get('deviceId') or '').strip()
+        label = acct_name(a, '账号%d' % idx)
+        did = (a.get('deviceId') or '').strip()
         at = (a.get('accessToken') or '').strip()
         uid = str(a.get('uid') or '').strip()
         # 每个账号若自带设备密钥，也可用
@@ -529,7 +541,7 @@ def load_accounts():
             if not rt:
                 continue
             idx = i + 1
-            label = a.get('name') or a.get('uid') or '账号%d' % idx
+            label = acct_name(a, '账号%d' % idx)
             if only and only not in (str(idx), str(a.get('uid', '')), label):
                 continue
             priv = norm_pem(a.get('deviceKeyPem', ''))
@@ -552,10 +564,10 @@ def load_accounts():
         if not rt:
             continue
         did = os.environ.get('TRAE_DEVICE_ID' if i == 1 else 'TRAE_DEVICE_ID_%d' % i, '').strip()
-        label = '账号%d' % i
-        if only and only not in (str(i), label):
-            continue
         uid = os.environ.get('TRAE_UID' if i == 1 else 'TRAE_UID_%d' % i, '').strip()
+        label = acct_name({'uid': uid}, '账号%d' % i)
+        if only and only not in (str(i), uid, label):
+            continue
         accounts.append((i, rt, did, label, None, '', uid))
     return accounts
 

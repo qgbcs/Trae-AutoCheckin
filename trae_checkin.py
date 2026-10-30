@@ -245,6 +245,18 @@ def today_str():
     return time.strftime('%Y-%m-%d', bj_now())
 
 
+def acct_name(a, fallback=''):
+    """统一展示名：remark.name；没有就显示 {uid:数字}。"""
+    rem = a.get('remark') if isinstance(a.get('remark'), dict) else {}
+    n = str(rem.get('name') or '').strip()
+    if n:
+        return n
+    uid = str(a.get('uid') or '').strip()
+    if uid:
+        return '{uid:%s}' % uid
+    return fallback or '账号'
+
+
 def load_state():
     try:
         with open(STATE_FILE, 'r', encoding='utf-8') as fh:
@@ -299,7 +311,6 @@ def cooldown_left(key, state=None):
 def _acct_key(acc):
     return (str(acc.get('uid') or '').strip()
             or str(acc.get('_name') or '').strip()
-            or str(acc.get('name') or '').strip()
             or 'default')
 
 
@@ -619,7 +630,7 @@ def persist_local_json(acc):
     if not os.path.isfile(LOCAL_ACCOUNTS_FILE):
         return
     uid = str(acc.get('uid') or '').strip()
-    name = str(acc.get('_name') or acc.get('name') or '').strip()
+    name = acct_name(acc, str(acc.get('_name') or '').strip())
     try:
         with open(LOCAL_ACCOUNTS_FILE, 'r', encoding='utf-8') as fh:
             data = json.load(fh)
@@ -628,7 +639,7 @@ def persist_local_json(acc):
             if not isinstance(a, dict):
                 continue
             fuid = str(a.get('uid') or '').strip()
-            fname = str(a.get('name') or '').strip()
+            fname = acct_name(a)
             if not ((uid and fuid == uid) or (name and fname == name)):
                 continue
             if a.get('accessToken') == acc['accessToken'] and a.get('refreshToken') == acc.get('refreshToken'):
@@ -693,7 +704,7 @@ def save_device_ids(ids):
         print('⚠️  [设备号] 持久化失败: %s' % e)
 
 
-def real_device_ids():
+def local_device_ids():
     out = []
     paths = []
     env = os.getenv('TRAE_STORAGE_PATH', '').strip()
@@ -720,12 +731,11 @@ def real_device_ids():
 
 def rotate_device_id(acc):
     key = _acct_key(acc)
-    name = acc.get('_name') or acc.get('name') or key
-    tried = {str(acc.get('deviceId') or '').strip(), str(acc.get('_realDid') or '').strip()}
-    for d in real_device_ids():
+    name = acc.get('_name') or key
+    tried = {str(acc.get('deviceId') or '').strip()}
+    for d in local_device_ids():
         if d not in tried:
             acc['deviceId'] = d
-            acc['_realDid'] = d
             print('🔄 [设备号] %s 换用本机客户端的另一个真实设备号 %s' % (name, d))
             return d
     print('ℹ️  [设备号] %s 没有可切换的其它真实设备号（生成号注定 9074，不再更换）' % name)
@@ -733,9 +743,9 @@ def rotate_device_id(acc):
 
 
 def device_id_for(acc, manual=''):
-    real = str(acc.get('_realDid') or '').strip()
-    if is_valid_device_id(real):
-        return real
+    did = str(acc.get('deviceId') or '').strip()
+    if is_valid_device_id(did):
+        return did
     if is_valid_device_id(manual):
         return str(manual).strip()
     seed = _acct_key(acc)
@@ -788,20 +798,25 @@ def pick(d, *candidates):
 
 
 def normalize(d, src, name='', real=''):
+    uid = str(pick(d, 'uid', 'userId', 'user_id'))
+    rem = d.get('remark') if isinstance(d.get('remark'), dict) else {}
+    nm = str(rem.get('name') or '').strip() or str(name or '').strip()
     return {'accessToken': pick(d, 'accessToken', 'token', 'access_token'),
             'refreshToken': pick(d, 'refreshToken', 'refresh_token'),
-            'deviceId': pick(d, 'deviceId', 'device_id'),
+            'deviceId': pick(d, 'deviceId', 'device_id') or (real or ''),
             'deviceKeyPem': pick(d, 'deviceKeyPem', 'device_key_pem'),
             'devicePubPem': pick(d, 'devicePubPem', 'device_pub_pem'),
             'machineId': pick(d, 'machineId', 'machine_id'),
-            'uid': str(pick(d, 'uid', 'userId', 'user_id')),
-            '_src': src, '_name': name, '_realDid': real}
+            'uid': uid,
+            'remark': {'name': nm} if nm else {},
+            '_src': src, '_name': acct_name({'uid': uid, 'remark': {'name': nm} if nm else {}},
+                                            name or '账号')}
 
 
 def build_account(raw, name):
+    name = name or acct_name(raw, '账号')
     if raw.get('accessToken'):
-        return normalize(raw, 'accounts.json(明文token)', name or raw.get('uid', name),
-                         str(raw.get('realDeviceId') or ''))
+        return normalize(raw, 'accounts.json(明文token)', name, str(raw.get('deviceId') or ''))
     if raw.get('icubeAuth'):
         return normalize(json.loads(decrypt_storage_value(raw['icubeAuth'].strip())),
                          'accounts.json(icubeAuth)', name)
@@ -823,11 +838,14 @@ def from_env_only():
     accs = []
     for i, rt in rts:
         idx = '' if i == 1 else '_%d' % i
-        accs.append({'accessToken': os.getenv('TRAE_ACCESS_TOKEN%s' % idx, '').strip(),
-                     'refreshToken': rt,
-                     'deviceId': os.getenv('TRAE_DEVICE_ID%s' % idx, '').strip(),
-                     'uid': os.getenv('TRAE_UID%s' % idx, '').strip(),
-                     'name': os.getenv('TRAE_NAME%s' % idx, '') or '账号%d' % i})
+        nm = os.getenv('TRAE_NAME%s' % idx, '')
+        acc = {'accessToken': os.getenv('TRAE_ACCESS_TOKEN%s' % idx, '').strip(),
+               'refreshToken': rt,
+               'deviceId': os.getenv('TRAE_DEVICE_ID%s' % idx, '').strip(),
+               'uid': os.getenv('TRAE_UID%s' % idx, '').strip(),
+               'remark': {'name': nm} if nm else {}}
+        acc['_name'] = acct_name(acc, '账号%d' % i)
+        accs.append(acc)
     print('🔁 [兼容] 从 TRAE_REFRESH_TOKEN* 读到 %d 个账号，accessToken 将自动续期换取' % len(accs))
     return accs
 
@@ -837,7 +855,7 @@ def filter_only(accounts):
     if not only:
         return accounts
     picked = [a for i, a in enumerate(accounts)
-              if only in (str(i + 1), str(a.get('uid')), a.get('_name') or a.get('name') or '')]
+              if only in (str(i + 1), str(a.get('uid')), a.get('_name') or '')]
     if picked:
         print('🎯 [筛选] TRAE_ONLY=%s -> 仅处理 %d 个账号' % (only, len(picked)))
         return picked
@@ -865,7 +883,7 @@ def _load_local_json_accounts():
         if not isinstance(raw, dict):
             continue
         try:
-            accounts.append(build_account(raw, raw.get('name') or raw.get('uid') or '账号%d' % (i + 1)))
+            accounts.append(build_account(raw, acct_name(raw, '账号%d' % (i + 1))))
         except Exception as e:
             print('❌ [!trae.json] 账号%d 加载失败: %s' % (i + 1, e), file=sys.stderr)
     if not accounts:
@@ -895,7 +913,7 @@ def load_accounts():
         accounts = []
         for i, raw in enumerate(data):
             try:
-                accounts.append(build_account(raw, raw.get('name', '账号%d' % (i + 1))))
+                accounts.append(build_account(raw, acct_name(raw, '账号%d' % (i + 1))))
             except Exception as e:
                 print('❌ [凭据] 账号%d 加载失败: %s' % (i + 1, e), file=sys.stderr)
         accounts = filter_only(apply_cache(accounts))
@@ -937,9 +955,10 @@ def load_accounts():
                    'refreshToken': refresh_token,
                    'deviceId': os.getenv('TRAE_DEVICE_ID', ''),
                    'uid': os.getenv('TRAE_UID', ''),
-                   'name': os.getenv('TRAE_NAME', '环境变量账号')}
+                   'remark': ({'name': os.getenv('TRAE_NAME', '')}
+                              if os.getenv('TRAE_NAME', '') else {})}
         acc['deviceId'] = os.getenv('TRAE_DEVICE_ID', '')
-        acc['_name'] = acc.get('name', '') or acc.get('uid', '')
+        acc['_name'] = acct_name(acc, '环境变量账号')
         return [acc]
 
     print('❌ [凭据] 未找到账号配置。可选写法：脚本同目录 !trae.json / TRAE_ACCOUNTS(JSON数组，推荐) / '
@@ -1082,7 +1101,7 @@ def push(title, text):
 
 # ══════════════════ 单个账号处理 ══════════════════
 def checkin_account(acc, cache):
-    name = acc.get('_name') or acc.get('name') or acc.get('uid') or '(未知)'
+    name = acc.get('_name') or '(未知)'
     result = {'name': name, 'uid': acc.get('uid', '-'), 'icon': '✅',
               'status': '失败', 'credits': '-', 'detail': '', '_claimed': False}
 
@@ -1214,16 +1233,16 @@ def main():
         key = _acct_key(acc)
         rec = (state.get('done') or {}).get(key)
         if rec:
-            results.append({'name': acc.get('_name') or acc.get('name') or key,
+            results.append({'name': acc.get('_name') or key,
                             'uid': acc.get('uid', '-'), 'icon': '☑️', 'status': '已签到',
                             'credits': rec.get('credits', '-'),
                             'detail': '今日已完成（%s），跳过请求' % rec.get('at', '-')})
-            print('☑️  [%s] 今日已签到，跳过' % (acc.get('_name') or acc.get('name') or key))
+            print('☑️  [%s] 今日已签到，跳过' % (acc.get('_name') or key))
         else:
             left = cooldown_left(key)
             if left > 0:
                 print('⏳ [冷却] %s 9074 冷却中，还剩 %d 分钟，本轮跳过'
-                      % (acc.get('_name') or acc.get('name') or key, (left + 59) // 60))
+                      % (acc.get('_name') or key, (left + 59) // 60))
             else:
                 pending.append(acc)
     if not pending:
@@ -1234,7 +1253,7 @@ def main():
 
     batch = pick_batch(pending)
     if len(batch) < len(pending):
-        names = '、'.join(a.get('_name') or a.get('name') or _acct_key(a) for a in batch)
+        names = '、'.join(a.get('_name') or _acct_key(a) for a in batch)
         print('🎚  [轮签] 本轮只签 %s（其余交给后续 cron，避开整点排队限流）' % names)
     if batch and os.getenv('TRAE_JITTER', '1').strip() != '0':
         wait = random.randint(0,1)
